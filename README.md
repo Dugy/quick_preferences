@@ -1,9 +1,11 @@
 # Quick Preferences
-A small header-only library for convenient saving of program preferences without boilerplate. It uses the [JSON format](https://en.wikipedia.org/wiki/JSON). It's designed for minising the amount of code used for saving and loading while keeping the saved file human-readable, it's not optimised for performance.
+A small header-only library for convenient setting and saving of program preferences without boilerplate and for generating Qt-based UIs that allow modifying the stucture by the user. It uses the [JSON format](https://en.wikipedia.org/wiki/JSON). It's designed for minising the amount of code used for saving and loading while keeping the saved file human-readable, it's not optimised for performance.
 
 Normally, persistent preferences tend to have one method for saving that contains code for loading all the content and one method for saving it all. Also, there might be some validity checking. This allows saving it all in one method that calls overloads of one method to all members to be saved.
 
 It contains a small JSON library to avoid a dependency on a library that is probably much larger than this one. It's not advised to be used for generic JSON usage.
+
+A fork from an earlier version without the ability to generate UIs and without the dependency on Qt is [here](https://github.com/Dugy/serialisable).
 
 ## Usage
 
@@ -56,7 +58,17 @@ prefs.load("prefs.json");
 prefs.save("prefs.json");
 ```
 
-It relies only on standard libraries, so you can use any C++11 compliant compiler to compile it.
+To generate a UI, all you need is this:
+```C++
+ 	// Assuming preferences_ is a class that inherits from QuickPreferences
+	QWidget* made = preferences_.makeGUI(); // Create the widget
+	// Supposing ui->mainLayout is a layout
+	ui->mainLayout->addWidget(made); // Add it to a window
+```
+
+The `makeGUI()` method can have an occasional parameter of type `std:function<void()>` that is called after any change.
+
+It relies on Qt widget libraries and C++11 standard libraries. It does not need the meta object compiler or any modifications to C++ occasionally used by Qt. For a version without dependencies on Qt, use [this fork](https://github.com/Dugy/serialisable).
 
 ## JSON library
 
@@ -90,3 +102,8 @@ testReadJson->writeToFile("test-reread.json");
 The structure consists of JSON nodes of various types. They all have the same methods for accessing the contents returning references to the correct types (`getString()`, `getDouble()`, `getBool()`, `getObject()` and `getArray()`), but they are all virtual and only the correct one will not throw an exception. The type can be learned using the `type()` method. The interface class `QuickPreferences::JSON` is also the _null_ type.
 
 The parser can parse incorrect code in some cases because some of the information in JSON files is redundant.
+
+## TODO
+
+* Allow creating custom UIs of nested elements by overriding the `makeGUI()` method
+* Allow supplying flags to the `synch()` method to optionally enable tabs bars instead of linear layouts, disable table generation, grouping of elements into more columns, some serialisation specifications or something else if that comes to my mind
