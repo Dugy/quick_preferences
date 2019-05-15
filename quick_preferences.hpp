@@ -17,6 +17,16 @@
 #include <sstream>
 #include <type_traits>
 
+#include <QWidget>
+#include <QGridLayout>
+#include <QLabel>
+#include <QCheckBox>
+#include <QLineEdit>
+#include <QVBoxLayout>
+#include <QObject>
+#include <QPushButton>
+#include <QGroupBox>
+
 class QuickPreferences {
 
 public:
@@ -283,8 +293,32 @@ public:
 	}
 
 private:
-	mutable std::shared_ptr<JSON> preferencesJson_;
-	mutable bool preferencesSaving_;
+
+	struct GUImakingInfo {
+		QGridLayout* layout;
+		short int gridDown;
+		short int gridRight;
+		std::shared_ptr<std::function<void()>> callback;
+	};
+	mutable union {
+		JSON* preferencesJson;
+		GUImakingInfo* guiInfo;
+	} actionData_;
+
+	enum class ActionType : uint8_t {
+		LOADING,
+		SAVING,
+		GUI,
+		GUItable
+	};
+	mutable ActionType action_;
+
+	void placeTableWidget(QWidget* placed, const std::string& title) {
+		if (actionData_.guiInfo->gridDown == 1)
+			actionData_.guiInfo->layout->addWidget(new QLabel(QString::fromStdString(title)), 0, actionData_.guiInfo->gridRight);
+		actionData_.guiInfo->layout->addWidget(placed, actionData_.guiInfo->gridDown, actionData_.guiInfo->gridRight);
+		actionData_.guiInfo->gridRight++;
+	}
 
 protected:
 	/*!
@@ -292,19 +326,19 @@ protected:
 	*
 	* \note If something unusual needs to be done, the saving() method returns if it's being saved or not
 	* \note The sync() method knows whether to save it or not
-	* \note Const correctness is violated here, but I find it better than duplication
+	* \note Const correctness is violated here, but I find it better than massive duplication
 	*/
-	virtual void saveOrLoad() = 0;
+	virtual void process() = 0;
 
 	/*!
 	* \brief Returns if the structure is being saved or loaded
 	*
 	* \return Whether it's saved (loaded if false)
 	*
-	* \note Result is meaningless outside a saveOrLoad() overload
+	* \note Result is meaningless outside a process() overload
 	*/
-	inline bool saving() {
-		return preferencesSaving_;
+	inline ActionType action() {
+		return action_;
 	}
 
 	/*!
@@ -314,15 +348,34 @@ protected:
 	* \return false if the value was absent while reading, true otherwise
 	*/
 	inline bool synch(const std::string& key, std::string& value) {
-		if (preferencesSaving_) {
-			preferencesJson_->getObject()[key] = std::make_shared<JSONstring>(value);
-		} else {
-			auto found = preferencesJson_->getObject().find(key);
-			if (found != preferencesJson_->getObject().end()) {
+		switch (action_) {
+		case ActionType::SAVING:
+			actionData_.preferencesJson->getObject()[key] = std::make_shared<JSONstring>(value);
+			return true;
+		case ActionType::LOADING:
+		{
+			auto found = actionData_.preferencesJson->getObject().find(key);
+			if (found != actionData_.preferencesJson->getObject().end()) {
 				value = found->second->getString();
+				return true;
 			} else return false;
 		}
-		return true;
+		case ActionType::GUI:
+			actionData_.guiInfo->layout->addWidget(new QLabel(QString::fromStdString(key + ":")), actionData_.guiInfo->gridDown, 0);
+		case ActionType::GUItable:
+			QLineEdit* editor = new QLineEdit(QString::fromStdString(value));
+			std::shared_ptr<std::function<void()>> callback = actionData_.guiInfo->callback;
+			QObject::connect(editor, &QLineEdit::editingFinished, actionData_.guiInfo->layout, [&value, editor, callback]() {
+				value = editor->text().toStdString();
+				if (callback) (*callback)();
+			});
+			if (action_ == ActionType::GUI) {
+				actionData_.guiInfo->layout->addWidget(editor, actionData_.guiInfo->gridDown, 1);
+				actionData_.guiInfo->gridDown++;
+			}
+			else placeTableWidget(editor, key);
+			return true;
+		}
 	}
 	
 	/*!
@@ -336,15 +389,37 @@ protected:
 	template<typename T>
 	typename std::enable_if<std::is_arithmetic<T>::value && !std::is_same<T, bool>::value, bool>::type
 	synch(const std::string& key, T& value) {
-		if (preferencesSaving_) {
-			preferencesJson_->getObject()[key] = std::make_shared<JSONdouble>(double(value));
-		} else {
-			auto found = preferencesJson_->getObject().find(key);
-			if (found != preferencesJson_->getObject().end()) {
+		switch (action_) {
+		case ActionType::SAVING:
+			actionData_.preferencesJson->getObject()[key] = std::make_shared<JSONdouble>(double(value));
+			return true;
+		case ActionType::LOADING:
+		{
+			auto found = actionData_.preferencesJson->getObject().find(key);
+			if (found != actionData_.preferencesJson->getObject().end()) {
 				value = T(found->second->getDouble());
+				return true;
 			} return false;
 		}
-		return true;
+		case ActionType::GUI:
+			actionData_.guiInfo->layout->addWidget(new QLabel(QString::fromStdString(key + ":")), actionData_.guiInfo->gridDown, 0);
+		case ActionType::GUItable:
+			QLineEdit* editor = new QLineEdit(QString::fromStdString(std::to_string(value)));
+			std::shared_ptr<std::function<void()>> callback = actionData_.guiInfo->callback;
+			QObject::connect(editor, &QLineEdit::editingFinished, actionData_.guiInfo->layout, [&value, editor, callback]() {
+				if (std::is_integral<T>::value)
+					value = editor->text().toLong();
+				else
+					value = editor->text().toDouble();
+				if (callback) (*callback)();
+			});
+			if (action_ == ActionType::GUI) {
+				actionData_.guiInfo->layout->addWidget(editor, actionData_.guiInfo->gridDown, 1);
+				actionData_.guiInfo->gridDown++;
+			}
+			else placeTableWidget(editor, key);
+			return true;
+		}
 	}
 
 	/*!
@@ -354,15 +429,34 @@ protected:
 	* \return false if the value was absent while reading, true otherwise
 	*/
 	inline bool synch(const std::string& key, bool& value) {
-		if (preferencesSaving_) {
-			preferencesJson_->getObject()[key] = std::make_shared<JSONbool>(value);
-		} else {
-			auto found = preferencesJson_->getObject().find(key);
-			if (found != preferencesJson_->getObject().end()) {
+		switch (action_) {
+		case ActionType::SAVING:
+			actionData_.preferencesJson->getObject()[key] = std::make_shared<JSONbool>(value);
+			return true;
+		case ActionType::LOADING:
+		{
+			auto found = actionData_.preferencesJson->getObject().find(key);
+			if (found != actionData_.preferencesJson->getObject().end()) {
 				value = found->second->getBool();
+				return true;
 			} else return false;
 		}
-		return true;
+		case ActionType::GUI:
+		case ActionType::GUItable:
+			QCheckBox* check = new QCheckBox(QString::fromStdString((action_ == ActionType::GUI) ? key : ""));
+			check->setChecked(value);
+			std::shared_ptr<std::function<void()>> callback = actionData_.guiInfo->callback;
+			QObject::connect(check, &QCheckBox::clicked, actionData_.guiInfo->layout, [&value, check, callback]() {
+				value = check->isChecked();
+				if (callback) (*callback)();
+			});
+			if (action_ == ActionType::GUI) {
+				actionData_.guiInfo->layout->addWidget(check, actionData_.guiInfo->gridDown, 0, 1, 2);
+				actionData_.guiInfo->gridDown++;
+			}
+			else placeTableWidget(check, key);
+			return true;
+		}
 	}
 	
 	/*!
@@ -380,26 +474,71 @@ protected:
 			&& std::is_constructible<T, typename std::remove_reference<decltype(*std::declval<T>())>::type*>::value
 			&& std::is_arithmetic<typename std::remove_reference<decltype(!std::declval<T>())>::type>::value , bool>::type
 	synch(const std::string& key, T& value) {
-		if (preferencesSaving_) {
+		switch (action_) {
+		case ActionType::SAVING:
 			if (!value)
-				preferencesJson_->getObject()[key] = std::make_shared<JSON>();
+				actionData_.preferencesJson->getObject()[key] = std::make_shared<JSON>();
 			else {
 				synch(key, *value);
 			}
-		} else {
-			auto found = preferencesJson_->getObject().find(key);
-			if (found != preferencesJson_->getObject().end()) {
+			return true;
+		case ActionType::LOADING:
+		{
+			auto found = actionData_.preferencesJson->getObject().find(key);
+			if (found != actionData_.preferencesJson->getObject().end()) {
 				if (found->second->type() != JSONtype::NIL) {
-					value = new typename std::remove_reference<decltype(*std::declval<T>())>::type();
+					value = T(new typename std::remove_reference<decltype(*std::declval<T>())>::type());
 					synch(key, *value);
 				} else
 					value = nullptr;
+				return true;
 			} else {
 				value = nullptr;
 				return false;
 			}
 		}
-		return true;
+		case ActionType::GUI:
+		case ActionType::GUItable:
+			QGroupBox* group = new QGroupBox(QString::fromStdString((action_ == ActionType::GUI) ? key : ""));
+			group->setCheckable(true);
+			group->setChecked(bool(value));
+			actionData_.guiInfo->layout->addWidget(group, actionData_.guiInfo->gridDown, 0, 1, 2);
+			group->setLayout(new QGridLayout);
+			int regularMargin = group->layout()->margin();
+			group->layout()->setMargin(0);
+			std::shared_ptr<std::function<void()>> callback = actionData_.guiInfo->callback;
+			auto fill = [&value, regularMargin, group, callback] () {
+				group->layout()->setMargin(regularMargin);
+				std::unique_ptr<GUImakingInfo> info(new GUImakingInfo());
+				info->callback = callback;
+				info->layout = static_cast<QGridLayout*>(group->layout());
+				value->action_ = ActionType::GUI;
+				value->actionData_.guiInfo = info.get();
+				value->process();
+				value->actionData_.guiInfo = nullptr;
+			};
+			if (value)
+				fill();
+			QObject::connect(group, &QGroupBox::clicked, group, [&value, group, fill, callback]() {
+				if (group->isChecked()) {
+					value = T(new typename std::remove_reference<decltype(*std::declval<T>())>::type());
+					fill();
+				} else {
+					qDeleteAll(group->children());
+					delete group->layout();
+					group->setLayout(new QGridLayout);
+					group->layout()->setMargin(0);
+					value = nullptr;
+				}
+				if (callback) (*callback)();
+			});
+			if (action_ == ActionType::GUI) {
+				actionData_.guiInfo->layout->addWidget(group, actionData_.guiInfo->gridDown, 0, 1, 2);
+				actionData_.guiInfo->gridDown++;
+			}
+			else placeTableWidget(group, key);
+			return true;
+		}
 	}
 	
 	/*!
@@ -411,22 +550,51 @@ protected:
 	template<typename T>
 	typename std::enable_if<std::is_base_of<QuickPreferences, T>::value, bool>::type
 	synch(const std::string& key, T& value) {
-		value.preferencesSaving_ = preferencesSaving_;
-		if (preferencesSaving_) {
+		value.action_ = action_;
+		switch (action_) {
+		case ActionType::SAVING:
+		{
 			auto making = std::make_shared<JSONobject>();
-			value.preferencesJson_ = making;
-			value.saveOrLoad();
-			preferencesJson_->getObject()[key] = making;
-			value.preferencesJson_.reset();
-		} else {
-			auto found = preferencesJson_->getObject().find(key);
-			if (found != preferencesJson_->getObject().end()) {
-				value.preferencesJson_ = found->second;
-				value.saveOrLoad();
-				value.preferencesJson_.reset();
+			value.actionData_.preferencesJson = making.get();
+			value.process();
+			actionData_.preferencesJson->getObject()[key] = making;
+			value.actionData_.preferencesJson = nullptr;
+			return true;
+		}
+		case ActionType::LOADING:
+		{
+			auto found = actionData_.preferencesJson->getObject().find(key);
+			if (found != actionData_.preferencesJson->getObject().end()) {
+				value.actionData_.preferencesJson = found->second.get();
+				value.process();
+				value.actionData_.preferencesJson = nullptr;
+				return true;
 			} else return false;
 		}
-		return true;
+		case ActionType::GUI:
+		case ActionType::GUItable:
+			QGroupBox* group = new QGroupBox(QString::fromStdString(key + ":"));
+			QVBoxLayout* subLayout = new QVBoxLayout();
+			group->setLayout(subLayout);
+			QFrame* innerFrame = new QFrame;
+			QGridLayout* innerLayout = new QGridLayout;
+			innerFrame->setLayout(innerLayout);
+			subLayout->addWidget(innerFrame);
+
+			std::unique_ptr<GUImakingInfo> info(new GUImakingInfo());
+			info->callback = actionData_.guiInfo->callback;
+			info->layout = innerLayout;
+			value.action_ = ActionType::GUI;
+			value.actionData_.guiInfo = info.get();
+			value.process();
+			value.actionData_.guiInfo = nullptr;
+			if (action_ == ActionType::GUI) {
+				actionData_.guiInfo->layout->addWidget(group, actionData_.guiInfo->gridDown, 0, 1, 2);
+				actionData_.guiInfo->gridDown++;
+			}
+			else placeTableWidget(group, key);
+			return true;
+		}
 	}
 	
 	/*!
@@ -440,32 +608,94 @@ protected:
 	template<typename T>
 	typename std::enable_if<std::is_base_of<QuickPreferences, T>::value, bool>::type
 	synch(const std::string& key, std::vector<T>& value) {
-		if (preferencesSaving_) {
+		switch (action_) {
+		case ActionType::SAVING:
+		{
 			auto making = std::make_shared<JSONarray>();
 			for (unsigned int i = 0; i < value.size(); i++) {
 				auto innerMaking = std::make_shared<JSONobject>();
-				value[i].preferencesSaving_ = true;
-				value[i].preferencesJson_ = innerMaking;
-				value[i].saveOrLoad();
-				value[i].preferencesJson_.reset();
+				value[i].action_ = ActionType::SAVING;
+				value[i].actionData_.preferencesJson = innerMaking.get();
+				value[i].process();
+				value[i].actionData_.preferencesJson = nullptr;
 				making->getVector().push_back(innerMaking);
 			}
-			preferencesJson_->getObject()[key] = making;
-		} else {
+			actionData_.preferencesJson->getObject()[key] = making;
+			return true;
+		}
+		case ActionType::LOADING:
+		{
 			value.clear();
-			auto found = preferencesJson_->getObject().find(key);
-			if (found != preferencesJson_->getObject().end()) {
+			auto found = actionData_.preferencesJson->getObject().find(key);
+			if (found != actionData_.preferencesJson->getObject().end()) {
 				for (unsigned int i = 0; i < found->second->getVector().size(); i++) {
 					value.push_back(T());
 					T& filled = value.back();
-					filled.preferencesSaving_ = false;
-					filled.preferencesJson_ = found->second->getVector()[i];
-					filled.saveOrLoad();
-					filled.preferencesJson_.reset();
+					filled.action_ = ActionType::LOADING;
+					filled.actionData_.preferencesJson = found->second->getVector()[i].get();
+					filled.process();
+					filled.actionData_.preferencesJson = nullptr;
+					filled.actionData_.preferencesJson = nullptr;
 				}
+				return true;
 			} else return false;
 		}
-		return true;
+		case ActionType::GUI:
+		{
+			QWidget* group = new QGroupBox(QString::fromStdString(key + ":"));
+			QVBoxLayout* subLayout = new QVBoxLayout();
+			group->setLayout(subLayout);
+			QFrame* innerFrame = new QFrame;
+			subLayout->addWidget(innerFrame);
+			// Note about the strange shared_ptr to unique_ptr: the lambda cannot capture its own shared pointer or it will be never destroyed
+			std::shared_ptr<std::unique_ptr<std::function<void()>>> regenerateTable = std::make_shared<std::unique_ptr<std::function<void()>>>();
+			std::unique_ptr<std::function<void()>>* regenerateSafe = regenerateTable.get();
+			std::shared_ptr<std::function<void()>> callback = actionData_.guiInfo->callback;
+			(*regenerateSafe) = std::unique_ptr<std::function<void()>>(new std::function<void()>([innerFrame, &value, regenerateSafe, callback] () {
+				// There is no function to clear everything in a layout
+				if (innerFrame->layout()) {
+					qDeleteAll(innerFrame->children());
+					delete innerFrame->layout();
+				}
+				QGridLayout* innerLayout = new QGridLayout;
+				innerFrame->setLayout(innerLayout);
+				int subGridDown = 1;
+				for (auto it = value.begin(); it != value.end(); ++it) {
+					innerLayout->addWidget(new QLabel(QString::number(subGridDown)), subGridDown, 0);
+					std::unique_ptr<GUImakingInfo> info(new GUImakingInfo());
+					info->callback = callback;
+					info->layout = innerLayout;
+					info->gridDown = subGridDown;
+					info->gridRight = 1;
+					it->action_ = ActionType::GUItable;
+					it->actionData_.guiInfo = info.get();
+					it->process();
+					it->actionData_.guiInfo = nullptr;
+					QPushButton* deleteButton = new QPushButton(QPushButton::tr("Delete"));
+					innerLayout->addWidget(deleteButton, subGridDown, info->gridRight);
+					QObject::connect(deleteButton, &QPushButton::clicked, deleteButton, [&value, it, regenerateSafe, callback]() {
+						value.erase(it);
+						if (callback) (*callback)();
+						(**regenerateSafe)();
+					});
+					subGridDown++;
+				}
+			}));
+			(**regenerateTable)();
+			QPushButton* addButton = new QPushButton(QPushButton::tr("Add"));
+			QObject::connect(addButton, &QPushButton::clicked, addButton, [&value, regenerateTable, callback]() {
+				value.emplace_back();
+				if (callback) (*callback)();
+				(**regenerateTable)();
+			});
+			subLayout->addWidget(addButton);
+			actionData_.guiInfo->layout->addWidget(group, actionData_.guiInfo->gridDown, 0, 1, 2);
+			actionData_.guiInfo->gridDown++;
+			return true;
+		}
+		case ActionType::GUItable:
+			throw(std::logic_error("GUItable can't be called on vectors"));
+		}
 	}
 	
 	/*!
@@ -482,32 +712,93 @@ protected:
 	typename std::enable_if<std::is_base_of<QuickPreferences, typename std::remove_reference<decltype(*std::declval<T>())>::type>::value
 			&& std::is_constructible<T, typename std::remove_reference<decltype(*std::declval<T>())>::type*>::value, bool>::type
 	synch(const std::string& key, std::vector<T>& value) {
-		if (preferencesSaving_) {
+		switch (action_) {
+		case ActionType::SAVING:
+		{
 			auto making = std::make_shared<JSONarray>();
 			for (unsigned int i = 0; i < value.size(); i++) {
 				auto innerMaking = std::make_shared<JSONobject>();
-				(*value[i]).preferencesSaving_ = true;
-				(*value[i]).preferencesJson_ = innerMaking;
-				(*value[i]).saveOrLoad();
-				(*value[i]).preferencesJson_.reset();
+				(*value[i]).action_ = ActionType::SAVING;
+				(*value[i]).actionData_.preferencesJson = innerMaking.get();
+				(*value[i]).process();
+				(*value[i]).actionData_.preferencesJson = nullptr;
 				making->getVector().push_back(innerMaking);
 			}
-			preferencesJson_->getObject()[key] = making;
-		} else {
+			actionData_.preferencesJson->getObject()[key] = making;
+			return true;
+		}
+		case ActionType::LOADING:
+		{
 			value.clear();
-			auto found = preferencesJson_->getObject().find(key);
-			if (found != preferencesJson_->getObject().end()) {
+			auto found = actionData_.preferencesJson->getObject().find(key);
+			if (found != actionData_.preferencesJson->getObject().end()) {
 				for (unsigned int i = 0; i < found->second->getVector().size(); i++) {
 					value.emplace_back(new typename std::remove_reference<decltype(*std::declval<T>())>::type());
 					T& filled = value.back();
-					(*filled).preferencesSaving_ = false;
-					(*filled).preferencesJson_ = found->second->getVector()[i];
-					(*filled).saveOrLoad();
-					(*filled).preferencesJson_.reset();
+					(*value[i]).action_ = ActionType::LOADING;
+					(*filled).actionData_.preferencesJson = found->second->getVector()[i].get();
+					(*filled).process();
+					(*filled).actionData_.preferencesJson = nullptr;
 				}
+				return true;
 			} else return false;
 		}
-		return true;
+		case ActionType::GUI:
+		{
+			QWidget* group = new QGroupBox(QString::fromStdString(key + ":"));
+			QVBoxLayout* subLayout = new QVBoxLayout();
+			group->setLayout(subLayout);
+			QFrame* innerFrame = new QFrame;
+			subLayout->addWidget(innerFrame);
+			// Note about the strange shared_ptr to unique_ptr: the lambda cannot capture its own shared pointer or it will be never destroyed
+			std::shared_ptr<std::unique_ptr<std::function<void()>>> regenerateTable = std::make_shared<std::unique_ptr<std::function<void()>>>();
+			std::unique_ptr<std::function<void()>>* regenerateSafe = regenerateTable.get();
+			std::shared_ptr<std::function<void()>> callback = actionData_.guiInfo->callback;
+			(*regenerateSafe) = std::unique_ptr<std::function<void()>>(new std::function<void()>([innerFrame, &value, regenerateSafe, callback] () {
+				// There is no function to clear everything in a layout
+				if (innerFrame->layout()) {
+					qDeleteAll(innerFrame->children());
+					delete innerFrame->layout();
+				}
+				QGridLayout* innerLayout = new QGridLayout;
+				innerFrame->setLayout(innerLayout);
+				int subGridDown = 1;
+				for (auto it = value.begin(); it != value.end(); ++it) {
+					innerLayout->addWidget(new QLabel(QString::number(subGridDown)), subGridDown, 0);
+					std::unique_ptr<GUImakingInfo> info(new GUImakingInfo());
+					info->callback = callback;
+					info->layout = innerLayout;
+					info->gridDown = subGridDown;
+					info->gridRight = 1;
+					(*it)->action_ = ActionType::GUItable;
+					(*it)->actionData_.guiInfo = info.get();
+					(*it)->process();
+					(*it)->actionData_.guiInfo = nullptr;
+					QPushButton* deleteButton = new QPushButton(QPushButton::tr("Delete"));
+					innerLayout->addWidget(deleteButton, subGridDown, info->gridRight);
+					QObject::connect(deleteButton, &QPushButton::clicked, deleteButton, [&value, it, regenerateSafe, callback]() {
+						value.erase(it);
+						if (callback) (*callback)();
+						(**regenerateSafe)();
+					});
+					subGridDown++;
+				}
+			}));
+			(**regenerateTable)();
+			QPushButton* addButton = new QPushButton(QPushButton::tr("Add"));
+			QObject::connect(addButton, &QPushButton::clicked, addButton, [&value, regenerateTable, callback]() {
+				value.emplace_back(new typename std::remove_reference<decltype(*std::declval<T>())>::type());
+				if (callback) (*callback)();
+				(**regenerateTable)();
+			});
+			subLayout->addWidget(addButton);
+			actionData_.guiInfo->layout->addWidget(group, actionData_.guiInfo->gridDown, 0, 1, 2);
+			actionData_.guiInfo->gridDown++;
+			return true;
+		}
+		case ActionType::GUItable:
+			throw(std::logic_error("GUItable can't be called on vectors"));
+		}
 	}
 
 public:
@@ -528,20 +819,42 @@ public:
 		actionData_.preferencesJson = nullptr;
 		return out.str();
 	}
-	
+
 	/*!
 	* \brief Saves the object to a JSON file
 	* \param The name of the JSON file
 	*
-	* \note It calls the overloaded saveOrLoad() method
+	* \note It calls the overloaded process() method
 	* \note Not only that it's not thread-safe, it's not even reentrant
 	*/
 	inline void save(const std::string& fileName) const {
-		preferencesJson_ = std::make_shared<JSONobject>();
-		preferencesSaving_ = true;
-		const_cast<QuickPreferences*>(this)->saveOrLoad();
-		preferencesJson_->writeToFile(fileName);
-		preferencesJson_.reset();
+		std::shared_ptr<JSON> target = std::make_shared<JSONobject>();
+		actionData_.preferencesJson = target.get();
+		action_ = ActionType::SAVING;
+		const_cast<QuickPreferences*>(this)->process();
+		actionData_.preferencesJson->writeToFile(fileName);
+		actionData_.preferencesJson = nullptr;
+	}
+
+	/*!
+	* \brief Loads the object from a JSON string
+	* \param The JSON string
+	*
+	* \note It calls the overloaded process() method
+	* \note If the string is blank, nothing is done
+	* \note Not only that it's not thread-safe, it's not even reentrant
+	*/
+	inline void deserialise(const std::string& source) {
+		std::stringstream sourceStream(source);
+		std::shared_ptr<JSON> target = parseJSON(source);
+		actionData_.preferencesJson = target.get();
+		if (actionData_.preferencesJson->type() == JSONtype::NIL) {
+			actionData_.preferencesJson = nullptr;
+			return;
+		}
+		action_ = ActionType::LOADING;
+		process();
+		actionData_.preferencesJson = nullptr;
 	}
 
 	/*!
@@ -569,19 +882,42 @@ public:
 	* \brief Loads the object from a JSON file
 	* \param The name of the JSON file
 	*
-	* \note It calls the overloaded saveOrLoad() method
+	* \note It calls the overloaded process() method
 	* \note If the file cannot be read, nothing is done
 	* \note Not only that it's not thread-safe, it's not even reentrant
 	*/
 	inline void load(const std::string& fileName) {
-		preferencesJson_ = parseJSON(fileName);
-		if (preferencesJson_->type() == JSONtype::NIL) {
-			preferencesJson_.reset();
+		std::shared_ptr<JSON> target = parseJSON(fileName);
+		actionData_.preferencesJson = target.get();
+		if (actionData_.preferencesJson->type() == JSONtype::NIL) {
+			actionData_.preferencesJson = nullptr;
 			return;
 		}
-		preferencesSaving_ = false;
-		saveOrLoad();
-		preferencesJson_.reset();
+		action_ = ActionType::LOADING;
+		process();
+		actionData_.preferencesJson = nullptr;
+	}
+
+	/*!
+	* \brief Generates a Qt widget from the class
+	*
+	* \note It calls the overloaded process() method
+	* \note Not only that it's not thread-safe, it's not even reentrant
+	*/
+	inline virtual QWidget* makeGUI(std::function<void()> callback = nullptr) {
+		// TODO: Should return a widget and accept a callback
+		std::unique_ptr<QWidget> retval(new QWidget);
+		action_ = ActionType::GUI;
+		std::unique_ptr<GUImakingInfo> info(new GUImakingInfo());
+		std::unique_ptr<QGridLayout> layout(new QGridLayout());
+		info->gridDown = 0;
+		info->layout = layout.get();
+		info->callback = callback ? std::make_shared<std::function<void()>>(callback) : nullptr;
+		actionData_.guiInfo = info.get();
+		process();
+		actionData_.guiInfo = nullptr;
+		retval->setLayout(layout.release());
+		return retval.release();
 	}
 };
 
