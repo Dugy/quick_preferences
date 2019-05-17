@@ -291,19 +291,7 @@ public:
 		if (!in.good()) return std::make_shared<JSON>();
 		return parseJSON(in);
 	}
-
-private:
-
-	struct GUImakingInfo {
-		QGridLayout* layout;
-		short int gridDown;
-		short int gridRight;
-		std::shared_ptr<std::function<void()>> callback;
-	};
-	mutable union {
-		JSON* preferencesJson;
-		GUImakingInfo* guiInfo;
-	} actionData_;
+protected:
 
 	enum class ActionType : uint8_t {
 		LOADING,
@@ -311,6 +299,19 @@ private:
 		GUI,
 		GUItable
 	};
+
+private:
+
+	struct GUImakingInfo {
+		QGridLayout* layout = nullptr;
+		int gridDown = 0;
+		int gridRight = 0;
+		std::shared_ptr<std::function<void()>> callback;
+	};
+	mutable union {
+		JSON* preferencesJson;
+		GUImakingInfo* guiInfo;
+	} actionData_;
 	mutable ActionType action_;
 
 	void placeTableWidget(QWidget* placed, const std::string& title) {
@@ -339,6 +340,22 @@ protected:
 	*/
 	inline ActionType action() {
 		return action_;
+	}
+
+	/*!
+	* \brief Prepares internal parameters for the synch() calls made by process()
+	* \param The layout it should fill
+	* \param The vertical offset in the layout grid
+	* \param The horizontal offset in the layout grid
+	* \param A shared pointer to a callback function
+	*
+	* \note This is useful when overloading constructGUI()
+	*/
+	inline void setupProcess(QGridLayout* layout, int gridDown = 0, int gridRight = 0, std::shared_ptr<std::function<void()>> callback = nullptr) {
+		actionData_.guiInfo->gridDown = gridDown;
+		actionData_.guiInfo->gridRight = gridRight;
+		actionData_.guiInfo->layout = layout;
+		actionData_.guiInfo->callback = callback;
 	}
 
 	/*!
@@ -509,13 +526,7 @@ protected:
 			std::shared_ptr<std::function<void()>> callback = actionData_.guiInfo->callback;
 			auto fill = [&value, regularMargin, group, callback] () {
 				group->layout()->setMargin(regularMargin);
-				std::unique_ptr<GUImakingInfo> info(new GUImakingInfo());
-				info->callback = callback;
-				info->layout = static_cast<QGridLayout*>(group->layout());
-				value->action_ = ActionType::GUI;
-				value->actionData_.guiInfo = info.get();
-				value->process();
-				value->actionData_.guiInfo = nullptr;
+				value->makeGUI(static_cast<QGridLayout*>(group->layout()), 0, 0, callback);
 			};
 			if (value)
 				fill();
@@ -580,14 +591,7 @@ protected:
 			QGridLayout* innerLayout = new QGridLayout;
 			innerFrame->setLayout(innerLayout);
 			subLayout->addWidget(innerFrame);
-
-			std::unique_ptr<GUImakingInfo> info(new GUImakingInfo());
-			info->callback = actionData_.guiInfo->callback;
-			info->layout = innerLayout;
-			value.action_ = ActionType::GUI;
-			value.actionData_.guiInfo = info.get();
-			value.process();
-			value.actionData_.guiInfo = nullptr;
+			value.makeGUI(innerLayout, 0, 0, actionData_.guiInfo->callback);
 			if (action_ == ActionType::GUI) {
 				actionData_.guiInfo->layout->addWidget(group, actionData_.guiInfo->gridDown, 0, 1, 2);
 				actionData_.guiInfo->gridDown++;
@@ -660,19 +664,14 @@ protected:
 				QGridLayout* innerLayout = new QGridLayout;
 				innerFrame->setLayout(innerLayout);
 				int subGridDown = 1;
+				int deletePosition = 0;
 				for (auto it = value.begin(); it != value.end(); ++it) {
 					innerLayout->addWidget(new QLabel(QString::number(subGridDown)), subGridDown, 0);
-					std::unique_ptr<GUImakingInfo> info(new GUImakingInfo());
-					info->callback = callback;
-					info->layout = innerLayout;
-					info->gridDown = subGridDown;
-					info->gridRight = 1;
-					it->action_ = ActionType::GUItable;
-					it->actionData_.guiInfo = info.get();
-					it->process();
-					it->actionData_.guiInfo = nullptr;
+					it->makeGUItable(innerLayout, subGridDown, 1, callback);
 					QPushButton* deleteButton = new QPushButton(QPushButton::tr("Delete"));
-					innerLayout->addWidget(deleteButton, subGridDown, info->gridRight);
+					if (!deletePosition)
+						deletePosition = innerLayout->columnCount();
+					innerLayout->addWidget(deleteButton, subGridDown, deletePosition);
 					QObject::connect(deleteButton, &QPushButton::clicked, deleteButton, [&value, it, regenerateSafe, callback]() {
 						value.erase(it);
 						if (callback) (*callback)();
@@ -763,19 +762,14 @@ protected:
 				QGridLayout* innerLayout = new QGridLayout;
 				innerFrame->setLayout(innerLayout);
 				int subGridDown = 1;
+				int deletePosition = 0;
 				for (auto it = value.begin(); it != value.end(); ++it) {
 					innerLayout->addWidget(new QLabel(QString::number(subGridDown)), subGridDown, 0);
-					std::unique_ptr<GUImakingInfo> info(new GUImakingInfo());
-					info->callback = callback;
-					info->layout = innerLayout;
-					info->gridDown = subGridDown;
-					info->gridRight = 1;
-					(*it)->action_ = ActionType::GUItable;
-					(*it)->actionData_.guiInfo = info.get();
-					(*it)->process();
-					(*it)->actionData_.guiInfo = nullptr;
+					(*it)->makeGUItable(innerLayout, subGridDown, 1, callback);
 					QPushButton* deleteButton = new QPushButton(QPushButton::tr("Delete"));
-					innerLayout->addWidget(deleteButton, subGridDown, info->gridRight);
+					if (!deletePosition)
+						deletePosition = innerLayout->columnCount();
+					innerLayout->addWidget(deleteButton, subGridDown, deletePosition);
 					QObject::connect(deleteButton, &QPushButton::clicked, deleteButton, [&value, it, regenerateSafe, callback]() {
 						value.erase(it);
 						if (callback) (*callback)();
@@ -858,27 +852,6 @@ public:
 	}
 
 	/*!
-	* \brief Loads the object from a JSON string
-	* \param The JSON string
-	*
-	* \note It calls the overloaded process() method
-	* \note If the string is blank, nothing is done
-	* \note Not only that it's not thread-safe, it's not even reentrant
-	*/
-	inline void deserialise(const std::string& source) {
-		std::stringstream sourceStream(source);
-		std::shared_ptr<JSON> target = parseJSON(source);
-		actionData_.preferencesJson = target.get();
-		if (actionData_.preferencesJson->type() == JSONtype::NIL) {
-			actionData_.preferencesJson = nullptr;
-			return;
-		}
-		action_ = ActionType::LOADING;
-		process();
-		actionData_.preferencesJson = nullptr;
-	}
-
-	/*!
 	* \brief Loads the object from a JSON file
 	* \param The name of the JSON file
 	*
@@ -899,23 +872,94 @@ public:
 	}
 
 	/*!
-	* \brief Generates a Qt widget from the class
+	* \brief Overload this to change the behaviour of all GUI construction of this class, while it appears in the tree
+	* and retains all other functionality
+	* \param The layout to fill
+	* \param Optional offset down
+	* \param Optional offset left
+	* \param Optional functor providing callback when anything is changed
+	*
+	* \note Use setupProcess() to set up the behaviour of the synch() calls
+	* \note Using the process() method is not obligatory, but it must be present for serialisation anyway
+	* \note You can use the action() method to check if the GUI is to be laid out normally or horizontally
+	*/
+	inline virtual void constructGUI(QGridLayout* layout, int gridDown, int gridRight, std::shared_ptr<std::function<void()>> callback) {
+		setupProcess(layout, gridDown, gridRight, callback);
+		process();
+	}
+
+	/*!
+	* \brief Fills a QGridLayout using the class, can be overloaded to change its behaviour
+	* \param The layout to fill
+	* \param Optional offset down
+	* \param Optional offset left
+	* \param Optional functor providing callback when anything is changed
+	*
+	* \note Overloading this will change the behaviour of all other makeGUI calls
+	* \note It calls the overloaded process() method
+	* \note Not only that it's not thread-safe, it's not even reentrant
+	*/
+	inline void makeGUI(QGridLayout* layout, int gridDown = 0, int gridRight = 0, std::shared_ptr<std::function<void()>> callback = nullptr) {
+		action_ = ActionType::GUI;
+		std::unique_ptr<GUImakingInfo> info(new GUImakingInfo());
+		actionData_.guiInfo = info.get();
+		constructGUI(layout, gridDown, gridRight, callback);
+		actionData_.guiInfo = nullptr;
+	}
+
+	/*!
+	* \brief Fills a line of a QGridLayout table using the class, can be overloaded to change its behaviour
+	* \param The layout to fill
+	* \param Optional offset down
+	* \param Optional offset left
+	* \param Optional functor providing callback when anything is changed
+	*
+	* \note Overloading this will change the behaviour of all other makeGUI calls
+	* \note It calls the overloaded process() method
+	* \note Not only that it's not thread-safe, it's not even reentrant
+	*/
+	inline void makeGUItable(QGridLayout* layout, int gridDown = 0, int gridRight = 0, std::shared_ptr<std::function<void()>> callback = nullptr) {
+		action_ = ActionType::GUItable;
+		std::unique_ptr<GUImakingInfo> info(new GUImakingInfo());
+		actionData_.guiInfo = info.get();
+		constructGUI(layout, gridDown, gridRight, callback);
+		actionData_.guiInfo = nullptr;
+	}
+
+	/*!
+	* \brief Fills a QGridLayout using the class
+	* \param The layout to fill
+	* \param Optional functor providing callback when anything is changed
 	*
 	* \note It calls the overloaded process() method
 	* \note Not only that it's not thread-safe, it's not even reentrant
 	*/
-	inline virtual QWidget* makeGUI(std::function<void()> callback = nullptr) {
-		// TODO: Should return a widget and accept a callback
+	inline void makeGUI(QGridLayout* layout, int gridDown = 0, int gridRight = 0, std::function<void()> callback = nullptr) {
+		makeGUI(layout, gridDown, gridRight, callback ? std::make_shared<std::function<void()>>(callback) : nullptr);
+	}
+
+	/*!
+	* \brief Generates a Qt widget from the class
+	* \param Optional functor providing callback when anything is changed
+	*
+	* \note It calls the overloaded process() method
+	* \note Not only that it's not thread-safe, it's not even reentrant
+	*/
+	inline QWidget* makeGUI(std::function<void()> callback = nullptr) {
+		return makeGUI(callback ? std::make_shared<std::function<void()>>(callback) : nullptr);
+	}
+
+	/*!
+	* \brief Generates a Qt widget from the class
+	* \param Optional functor providing callback when anything is changed
+	*
+	* \note It calls the overloaded process() method
+	* \note Not only that it's not thread-safe, it's not even reentrant
+	*/
+	inline QWidget* makeGUI(std::shared_ptr<std::function<void()>> callback = nullptr) {
 		std::unique_ptr<QWidget> retval(new QWidget);
-		action_ = ActionType::GUI;
-		std::unique_ptr<GUImakingInfo> info(new GUImakingInfo());
 		std::unique_ptr<QGridLayout> layout(new QGridLayout());
-		info->gridDown = 0;
-		info->layout = layout.get();
-		info->callback = callback ? std::make_shared<std::function<void()>>(callback) : nullptr;
-		actionData_.guiInfo = info.get();
-		process();
-		actionData_.guiInfo = nullptr;
+		makeGUI(layout.get(), 0, 0, callback);
 		retval->setLayout(layout.release());
 		return retval.release();
 	}

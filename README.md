@@ -15,7 +15,7 @@ Supported types are `std::string`, arithmetic types (converted to `double` becau
 
 Default values should be set somewhere, because if `load()` does not find the specified file, it does not call the `saveOrLoad()` method.
 
-Missing keys will simply not write the value. Values of wrong types will throw.
+Missing keys will simply not write any value. Values of wrong types will throw.
 
 ```C++
 struct Chapter : public QuickPreferences {
@@ -70,6 +70,23 @@ The `makeGUI()` method can have an occasional parameter of type `std:function<vo
 
 It relies on Qt widget libraries and C++11 standard libraries. It does not need the meta object compiler or any modifications to C++ occasionally used by Qt. For a version without dependencies on Qt, use [this fork](https://github.com/Dugy/serialisable).
 
+To customise how an object in the tree structure builds its widgets, you can overload a method called constructGUI(), where you may or may not use the process() method that you must have defined anyway. This code for example postpones the callback until the _Accept_ button is pressed:
+```C++
+virtual void constructGUI(QGridLayout* layout, int gridDown, int gridRight, std::shared_ptr<std::function<void()>> callback) {
+	QPushButton* accept = new QPushButton("Accept");
+	accept->setEnabled(false);
+	setupProcess(layout, gridDown, gridRight, std::make_shared<std::function<void()>>([accept] () {
+		accept->setEnabled(true);
+	}));
+	process();
+	layout->addWidget(accept, layout->rowCount(), 0, 1, layout->columnCount());
+	QObject::connect(accept, &QPushButton::clicked, accept, [callback, accept] () {
+		accept->setEnabled(false);
+		(*callback)();
+	});
+}
+```
+
 ## JSON library
 
 The JSON library provided is only to avoid having additional dependencies. It's written to be short, its usage is prone to result in repetitive code. If you need JSON for something else, use a proper JSON library, like [the one written by Niels Lohmann](https://github.com/nlohmann/json), they are much more convenient.
@@ -105,5 +122,4 @@ The parser can parse incorrect code in some cases because some of the informatio
 
 ## TODO
 
-* Allow creating custom UIs of nested elements by overriding the `makeGUI()` method
 * Allow supplying flags to the `synch()` method to optionally enable tabs bars instead of linear layouts, disable table generation, grouping of elements into more columns, some serialisation specifications or something else if that comes to my mind
