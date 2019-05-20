@@ -200,7 +200,7 @@ public:
 
 	static std::shared_ptr<JSON> parseJSON(std::istream& in) {
 		auto readString = [&in] () -> std::string {
-			char letter = in.get();
+			char letter = char(in.get());
 			std::string collected;
 			while (letter != '"') {
 				if (letter == '\\') {
@@ -210,14 +210,14 @@ public:
 				} else {
 					collected.push_back(letter);
 				}
-				letter = in.get();
+				letter = char(in.get());
 			}
 			return collected;
 		};
 		auto readWhitespace = [&in] () -> char {
 			char letter;
 			do {
-				letter = in.get();
+				letter = char(in.get());
 			} while (letter == ' ' || letter == '\t' || letter == '\n' || letter == ',');
 			return letter;
 		};
@@ -249,7 +249,7 @@ public:
 			std::string asString;
 			asString.push_back(letter);
 			do {
-				letter = in.get();
+				letter = char(in.get());
 				asString.push_back(letter);
 			} while (letter == '-' || letter == 'E' || letter == 'e' || letter == ',' || letter == '.' || (letter >= '0' && letter <= '9'));
 			in.unget();
@@ -269,7 +269,7 @@ public:
 					retval->getObject()[name] = parseJSON(in);
 				} else break;
 			} while (letter != '}');
-			return retval;
+			return std::move(retval);
 		}
 		else if (letter == '[') {
 			auto retval = std::make_shared<JSONarray>();
@@ -280,9 +280,9 @@ public:
 					retval->getVector().push_back(parseJSON(in));
 				} else break;
 			} while (letter != ']');
-			return retval;
+			return std::move(retval);
 		} else {
-			throw(std::runtime_error("JSON parser found unexpected character " + letter));
+			throw(std::runtime_error(std::string("JSON parser found unexpected character ") + letter));
 		}
 		return std::make_shared<JSON>();
 	}
@@ -487,7 +487,7 @@ protected:
 	*/
 	template<typename T>
 	typename std::enable_if<!std::is_base_of<QuickPreferences, T>::value
-			&& std::is_same<bool, typename std::remove_reference<decltype(std::declval<QuickPreferences>().synch(std::declval<std::string>(), *std::declval<T>()))>::type>::value
+			&& std::is_same<bool, typename std::remove_reference<decltype(std::declval<T>().synch(std::declval<std::string>(), *std::declval<T>()))>::type>::value
 			&& std::is_constructible<T, typename std::remove_reference<decltype(*std::declval<T>())>::type*>::value
 			&& std::is_arithmetic<typename std::remove_reference<decltype(!std::declval<T>())>::type>::value , bool>::type
 	synch(const std::string& key, T& value) {
